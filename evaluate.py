@@ -23,6 +23,9 @@ parser.add_argument('--num_point', type=int, default=1024, help='Point Number [2
 parser.add_argument('--model_path', default='log/model.ckpt', help='model checkpoint file path [default: log/model.ckpt]')
 parser.add_argument('--dump_dir', default='dump', help='dump folder path [dump]')
 parser.add_argument('--visu', action='store_true', help='Whether to dump image for error case [default: False]')
+parser.add_argument('--reg_weight', type=float, default=0.001, help='Regularizer weight [default: 0.001]')
+parser.add_argument('--dataset', type=str, default='modelnet40_ply_hdf5_2048', help="Dataset [default: modelnet40_ply_hdf5_2048]")
+parser.add_argument('--num_classes', type=int, default=40, help='Number of output classes [default: 40]')
 FLAGS = parser.parse_args()
 
 
@@ -32,21 +35,23 @@ MODEL_PATH = FLAGS.model_path
 GPU_INDEX = FLAGS.gpu
 MODEL = importlib.import_module(FLAGS.model) # import network module
 DUMP_DIR = FLAGS.dump_dir
+REG_WEIGHT = FLAGS.reg_weight
+DATASET = FLAGS.dataset
+NUM_CLASSES = FLAGS.num_classes
+
 if not os.path.exists(DUMP_DIR): os.mkdir(DUMP_DIR)
 LOG_FOUT = open(os.path.join(DUMP_DIR, 'log_evaluate.txt'), 'w')
 LOG_FOUT.write(str(FLAGS)+'\n')
 
-NUM_CLASSES = 40
 SHAPE_NAMES = [line.rstrip() for line in \
-    open(os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/shape_names.txt'))] 
+    open(os.path.join(BASE_DIR, 'data', DATASET, 'shape_names.txt'))]
 
 HOSTNAME = socket.gethostname()
 
-# ModelNet40 official train/test split
 TRAIN_FILES = provider.getDataFiles( \
-    os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/train_files.txt'))
+    os.path.join(BASE_DIR, 'data', DATASET, 'train_files.txt'))
 TEST_FILES = provider.getDataFiles(\
-    os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/test_files.txt'))
+    os.path.join(BASE_DIR, 'data', DATASET, 'test_files.txt'))
 
 def log_string(out_str):
     LOG_FOUT.write(out_str+'\n')
@@ -61,8 +66,10 @@ def evaluate(num_votes):
         is_training_pl = tf.placeholder(tf.bool, shape=())
 
         # simple model
-        pred, end_points = MODEL.get_model(pointclouds_pl, is_training_pl)
-        loss = MODEL.get_loss(pred, labels_pl, end_points)
+        pred, end_points = MODEL.get_model(pointclouds_pl, is_training_pl,
+                                           num_classes=NUM_CLASSES,
+                                           bneck=BNECK))
+        loss = MODEL.get_loss(pred, labels_pl, end_points, reg_weight=REG_WEIGHT)
         
         # Add ops to save and restore all the variables.
         saver = tf.train.Saver()

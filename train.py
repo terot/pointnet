@@ -26,8 +26,13 @@ parser.add_argument('--momentum', type=float, default=0.9, help='Initial learnin
 parser.add_argument('--optimizer', default='adam', help='adam or momentum [default: adam]')
 parser.add_argument('--decay_step', type=int, default=200000, help='Decay step for lr decay [default: 200000]')
 parser.add_argument('--decay_rate', type=float, default=0.7, help='Decay rate for lr decay [default: 0.8]')
-FLAGS = parser.parse_args()
+parser.add_argument('--reg_weight', type=float, default=0.001, help='Regularizer weight [default: 0.001]')
+parser.add_argument('--dataset', type=str, default='modelnet40_ply_hdf5_2048', help="Dataset [default: modelnet40_ply_hdf5_2048]")
+parser.add_argument('--num_classes', type=int, default=40, help='Number of output classes [default: 40]')
+parser.add_argument('--save_every_epoch', type=int, default=10, help='Number of output classes [default: 40]')
+parser.add_argument('--bneck', type=int, default=1024, help='Bottleneck dimension [default: 1024]')
 
+FLAGS = parser.parse_args()
 
 BATCH_SIZE = FLAGS.batch_size
 NUM_POINT = FLAGS.num_point
@@ -38,6 +43,11 @@ MOMENTUM = FLAGS.momentum
 OPTIMIZER = FLAGS.optimizer
 DECAY_STEP = FLAGS.decay_step
 DECAY_RATE = FLAGS.decay_rate
+REG_WEIGHT = FLAGS.reg_weight
+DATASET = FLAGS.dataset
+NUM_CLASSES = FLAGS.num_classes
+SAVE_EVERY_EPOCH = FLAGS.save_every_epoch
+BNECK = FLAGS.bneck
 
 MODEL = importlib.import_module(FLAGS.model) # import network module
 MODEL_FILE = os.path.join(BASE_DIR, 'models', FLAGS.model+'.py')
@@ -49,8 +59,6 @@ LOG_FOUT = open(os.path.join(LOG_DIR, 'log_train.txt'), 'w')
 LOG_FOUT.write(str(FLAGS)+'\n')
 
 MAX_NUM_POINT = 2048
-NUM_CLASSES = 40
-
 BN_INIT_DECAY = 0.5
 BN_DECAY_DECAY_RATE = 0.5
 BN_DECAY_DECAY_STEP = float(DECAY_STEP)
@@ -58,11 +66,10 @@ BN_DECAY_CLIP = 0.99
 
 HOSTNAME = socket.gethostname()
 
-# ModelNet40 official train/test split
 TRAIN_FILES = provider.getDataFiles( \
-    os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/train_files.txt'))
+    os.path.join(BASE_DIR, 'data', DATASET, 'train_files.txt'))
 TEST_FILES = provider.getDataFiles(\
-    os.path.join(BASE_DIR, 'data/modelnet40_ply_hdf5_2048/test_files.txt'))
+    os.path.join(BASE_DIR, 'data', DATASET, 'test_files.txt'))
 
 def log_string(out_str):
     LOG_FOUT.write(out_str+'\n')
@@ -104,8 +111,11 @@ def train():
             tf.summary.scalar('bn_decay', bn_decay)
 
             # Get model and loss 
-            pred, end_points = MODEL.get_model(pointclouds_pl, is_training_pl, bn_decay=bn_decay)
-            loss = MODEL.get_loss(pred, labels_pl, end_points)
+            pred, end_points = MODEL.get_model(pointclouds_pl, is_training_pl,
+                                               bn_decay=bn_decay,
+                                               num_classes=NUM_CLASSES,
+                                               bneck=BNECK)
+            loss = MODEL.get_loss(pred, labels_pl, end_points, reg_weight=REG_WEIGHT)
             tf.summary.scalar('loss', loss)
 
             correct = tf.equal(tf.argmax(pred, 1), tf.to_int64(labels_pl))
@@ -162,7 +172,7 @@ def train():
             eval_one_epoch(sess, ops, test_writer)
             
             # Save the variables to disk.
-            if epoch % 10 == 0:
+            if epoch % SAVE_EVERY_EPOCH == 0:
                 save_path = saver.save(sess, os.path.join(LOG_DIR, "model.ckpt"))
                 log_string("Model saved in file: %s" % save_path)
 
@@ -230,7 +240,10 @@ def eval_one_epoch(sess, ops, test_writer):
         
         file_size = current_data.shape[0]
         num_batches = file_size // BATCH_SIZE
-        
+
+        if num_batches==0:
+            log_string('num_batches is zero! increase samples or reduce batch size.')
+
         for batch_idx in range(num_batches):
             start_idx = batch_idx * BATCH_SIZE
             end_idx = (batch_idx+1) * BATCH_SIZE
@@ -240,6 +253,7 @@ def eval_one_epoch(sess, ops, test_writer):
                          ops['is_training_pl']: is_training}
             summary, step, loss_val, pred_val = sess.run([ops['merged'], ops['step'],
                 ops['loss'], ops['pred']], feed_dict=feed_dict)
+            test_writer.add_summary(summary, step)
             pred_val = np.argmax(pred_val, 1)
             correct = np.sum(pred_val == current_label[start_idx:end_idx])
             total_correct += correct
